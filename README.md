@@ -15,3 +15,5 @@ Multilingual, Multimodal, Multidomain (M3) Model
 - positions are an array of 3D tensor (batch, sequence_id, column_id) 
 - need to add MSE loss
 - confirm and test MSE loss
+- Add up-projection and down-projection for embedings input and output embedding
+- Add Peft and freezing base model
