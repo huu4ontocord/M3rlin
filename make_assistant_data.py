@@ -4,6 +4,8 @@ import jsonlines
 import glob
 import tiktoken
 import os
+
+## We should use multiprocessing to avoid the GIL lock - HHN
 import threading
 from webdataset import ShardWriter
 import random
@@ -158,7 +160,7 @@ def main(input_files, output_dir, tokenizer="codellama/CodeLlama-7b-hf", num_wor
 
     enc = LlamaTokenizer.from_pretrained(tokenizer)
     
-    tokenize = lambda x: tokenize_eleutherai(enc, x)
+    tokenize = lambda x: tokenize_llama(enc, x)
     buffer = []  # Use list instead of queue.Queue
     buffer_lock = threading.Lock()
 
