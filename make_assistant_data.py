@@ -1,11 +1,16 @@
 #based on https://github.com/mlfoundations/open_lm/blob/main/datapreprocess/make_assistant_data.py
+#this program tokenizes text and converts tokenized arrays of ints into webdataset format (which are just tar files that can be streamed by webdataset)
+
+#TODO: save one or more embeddings with the same file name
+#we can also add a special token for embeddings, and load map the embedding into the position 
+
 #adpated to use codellama's tokenizer
 import jsonlines
 import glob
 import tiktoken
 import os
 
-## We should use multiprocessing to avoid the GIL lock - HHN
+#HHN - maybe use mulitprocessing for speedup so you don't have to worry about GIL
 import threading
 from webdataset import ShardWriter
 import random
@@ -34,7 +39,7 @@ pad_token = "</s>"
 
 def write_to_shard(chunks, shard_writer):
     for idx, chunk in enumerate(chunks):
-        shard_writer.write({"__key__": f"{idx:12d}", "txt": str(chunk)})
+        shard_writer.write({"__key__": f"{idx:12d}", "txt": str(chunk)})  # chunks appears to be a stringfied list of indices. we can also embedding directly into the chunks like so [12, 4, 1, base64 string, 5 9, base64 string, 100, ...]
 
 def upload_to_s3_and_remove(fname):
     fname_split = fname.split('/')
@@ -67,12 +72,19 @@ def process_files(file_list, buffer, enc, buffer_lock):
 
     for file_name in file_list:
         print('Processing', file_name)
-
+        
+        # we can load the embeddings here. but make sure the image loading is done outside of the buffer lock. 
+        
         with get_item_reader(file_name) as item_reader:
             for item in item_reader:
                 string = item['text']
+                #img = Image.load(... ) # load it from a file or 
+                #OR load it directly from a base64 string.
+                #img = item['img']
+                #OR - if we want to create the embeddings now, we can embed the image and store as a vector here (again base 64)
                 try:
                     tokens = remaining_tokens + enc(string) + [eot_token]
+                    # go through the tokens and find the special image token and replace with the base64 string that represents imgs/image embedding
                     remaining_tokens = []
                 except:
                     print('Failed to encode string.')
@@ -111,6 +123,7 @@ def consumer(my_id, output_dir, threads, buffer, buffer_lock, num_consumers, upl
 
     while any(t.is_alive() for t in threads):
         time.sleep(SLEEP_TIME)
+        # this appears to be some form of shuffling to put stuff from the buffer into chunks?
         with buffer_lock:
             lenb = len(buffer)
             print('Length of buffer', lenb)
@@ -144,6 +157,7 @@ def consumer(my_id, output_dir, threads, buffer, buffer_lock, num_consumers, upl
         chunks = []
 
 def tokenize_llama(tokenizer, string):
+    
     return tokenizer(string).input_ids
 
 def main(input_files, output_dir, tokenizer="codellama/CodeLlama-7b-hf", num_workers=32, num_consumers=8, upload_to_s3=False):
