@@ -101,8 +101,6 @@ def train_one_epoch(
 
         # CHANGE FOR INTERLEAVED EMBEDDING
         (texts,) = batch
-        # We need to find all the non ints here, and put in a special token, <IMG>, etc. . 
-        # and keep around a dict of the position and the embedding to feed into model.
         texts, embeddings, embedding_positions = extract_embeddings_from_texts(texts)
         texts = torch.LongTensor(texts).to(device)
         embeddings = embeddings.to(device)
@@ -114,17 +112,15 @@ def train_one_epoch(
             with autocast():
                 inputs, targets, start_idx = sample_chunk(texts, args.seq_len)
                 #HHN
-                out, _ = model(inputs, embeddings_dict, embedding_positions, start_idx) # need to change the model so we feed in embedding,  positions x,y,z (batch, row, column), and shifted start_idx, so indexing by column + start_idx
+                out, _, out_embeddings = model(inputs, embeddings, embedding_positions) 
                 if args.log_logit_mean:
                     logit_m.update(torch.mean(out).item())                  
 
                 #HHN
                 # we need to mask out prediction of the <IMG> tokens here for this loss.
+                # this would be mask_positions = [(a, b, c+1) for a,b,c in embedding_positions]
                 total_loss = loss(out.reshape(-1, args.vocab_size), targets.reshape(-1))
-                # now we need to do MSE Loss for prediction of x, y, z+sart_idx+1 (+1 b/c of autoregressive) to the embeddings 
-                # out_embeddings = out[seleced_embedding_items]
-                # get the embeddings_shifted_and_trimmed
-                # total_loss += alpha * mse_loss(out_embeddings, embeddings_shifted_and_trimmed), 
+                # total_loss  += alpha * mse_loss(embeddings, out_embeddings) / args.accum_freq
                 
             backward(total_loss, scaler)
         else:
@@ -143,22 +139,20 @@ def train_one_epoch(
                     targets_ii = targets[ii * per_batch : (ii + 1) * per_batch]
 
                     #HHN
-                    # we need to keep shifting embeddings and embedding_positions as well
-                    # embedding_ii = embedding[ii * per_batch : (ii + 1) * per_batch]                  
-                    # embedding_positions_ii = embedding_positions[ii * per_batch : (ii + 1) * per_batch]
-                    out, _ = model(inputs_ii, embedding_ii, embedding_positions_ii, start_idx) # need to change the model so we feed in embedding,  positions x,y,z (batch, row, column), and shifted start_idx, so indexing by column + start_idx
-                
+                    #embedding_positions = [(a, b, c+start_idx) for a,b,c in embedding_positions]
+                    #embeddings = embeddings[:,:,start_idx]
+                  
+                    out, _, out_embeddings = model(inputs_ii, embeddings_ii, embedding_positions_ii) 
+                    
                     if args.log_logit_mean:
                         logit_m.update(torch.mean(out).item())
-
+                    # we need to mask out prediction of the <IMG> tokens here for this loss.
+                    # this would be mask_positions = [(a, b, c+1) for a,b,c in embedding_positions]
                     local_loss = (
                         loss(out.reshape(-1, args.vocab_size), targets_ii.reshape(-1))
                         / args.accum_freq
                     )
-                  # now we need to do MSE Loss for prediction of x, y, z+sart_idx+1 (+1 b/c of autoregressive) to the embeddings 
-                  # out_embeddings = out[seleced_embedding_items]
-                  # get the embeddings_shifted_and_trimmed
-                  # local_loss += alpha * mse_loss(out_embeddings, embeddings_shifted_and_trimmed) / args.accum_freq
+                    # local_loss += alpha * mse_loss(embeddings, out_embeddings) / args.accum_freq
               
                 backward(local_loss, scaler)
                 if ii == 0:
@@ -248,8 +242,10 @@ def train_one_epoch(
 def extract_embeddings_from_texts(texts):
   # HHN - todo
   # got through the batch and the rows and and each item, 
-  # replace with <IMG> token where found and save away the embedding in an dict
-  return texts, embeddings_dict
+  # We need to find all the non ints here, and put in a special token, <IMG>
+  # create the embeddings from the data where there were non-ints
+  # save away the position and triples
+  return texts, embeddings, positions
 
 def evaluate(model, data, start_epoch, args, writer):
     """
@@ -283,20 +279,21 @@ def evaluate(model, data, start_epoch, args, writer):
         # and keep around a dict of the position and the embedding to feed into model.
         texts, embeddings, embedding_positions = extract_embeddings_from_texts(texts)
         texts = torch.LongTensor(texts).to(device)
-        embeddings_dict = embeddings_dict.to(device)
+        embeddings = embeddings.to(device)
       
         data_time_m.update(time.time() - end)
 
         with autocast():
             inputs, targets, start_idx = sample_chunk(texts, args.seq_len)
-
-            out, _ = model(inputs, embeddings_dict, embedding_positions, start_idx) # need to change the model so we feed in embedding,  positions x,y,z (batch, row, column), and shifted start_idx, so indexing by column + start_idx
+            #shift this is probably wrong, but we need to the column by start_idx
+            #embedding_positions = [(a, b, c+start_idx) for a,b,c in embedding_positions]
+            #embeddings = embeddings[:,:,start_idx]
+            out, _, out_embeddings = model(inputs, embeddings, embedding_positions) 
             # we need to mask out prediction of the <IMG> tokens here for this loss.
+            # this would be mask_positions = [(a, b, c+1) for a,b,c in embedding_positions]
             total_loss = loss(out.reshape(-1, args.vocab_size), targets.reshape(-1))
-            # now we need to do MSE Loss for prediction of x, y, z+sart_idx+1 (+1 b/c of autoregressive) to the embeddings
-            # out_embeddings = out[seleced_embedding_items]
-            # get the embeddings_shifted_and_trimmed
-            # total_loss += alpha * mse_loss(out_embeddings, embeddings_shifted_and_trimmed), 
+            # now we need to do MSE Loss for prediction 
+            # total_loss += alpha * mse_loss(embeddings, out_embeddings), 
             losses_m.update(total_loss.item(), inputs.shape[0])
         batch_time_m.update(time.time() - end)
         sps_m.update(inputs.numel() * args.world_size / batch_time_m.val)
